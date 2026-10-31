@@ -1,0 +1,44 @@
+{
+  "name": "@local/ai-ideas-manager",
+  "version": "0.1.0",
+  "private": true,
+  "description": "A daily AI creation desk for DeepSeek Harness.",
+  "type": "module",
+  "icon": "./icon.svg",
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./package.json": "./package.json",
+    "./locale/*.json": "./locale/*.json"
+  },
+  "files": [
+    "client.js",
+    "cordis.patch.yml",
+    "icon.svg",
+    "index.js",
+    "locale/*.json",
+    "scripts/*.mjs"
+  ],
+  "scripts": {
+    "check": "node --check client.js && node --check index.js && node --check scripts/verify.mjs",
+    "test": "node scripts/verify.mjs",
+    "verify": "npm run check && npm test"
+  },
+  "engines": {
+    "dsh": ">=0.2.1-rc.5"
+  },
+  "dsh": {
+    "manifestVersion": 1,
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "immediately": true,
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-layout",
+        "@deepseek-ai/dsh-client-ui-sidebar"
+      ]
+    }
+  }
+}

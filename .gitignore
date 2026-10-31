@@ -1,0 +1,5 @@
+node_modules/
+*.log
+.DS_Store
+Thumbs.db
+MakerVerse项目交接文档.md

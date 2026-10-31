@@ -1,0 +1,3 @@
+- insert:
+    - id: ai-ideas-manager
+      name: "@local/ai-ideas-manager"
