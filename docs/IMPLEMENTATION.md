@@ -35,4 +35,10 @@ MVP 的数据全部是浏览器本地结构化数据，不需要模型上下文�
 
 `npm run verify` 执行无依赖静态与装配检查。安装层通过 `dsh --profile web --dump-config` 验证 bundle 已进入组合树，Web 服务生成并返回 `@local/ai-ideas-manager/client.js` 资产。
 
-当前 Windows 环境的 Computer Use helper 因 `.sandbox-bin` ACL 初始化失败，无法完成浏览器截图；实际视觉验收仍需在可用的 DSH Web 页面中完成。
+视觉验收在 macOS 桌面端 DSH 中完成：修复前品牌区被红绿灯压住，修复后侧栏内容整体让出窗口条，导航与右侧正文标题对齐。
+
+## 窗口控制区适配
+
+`shell.overlay` 覆盖整个 frame，桌面端窗口条也在覆盖范围内。macOS 的红绿灯是原生控件，始终画在网页内容之上，插件必须自己让位；DSH 在根元素发布 `--dsh-frame-top-clearance`（macOS 为 48px，Windows 为标题栏高度），普通浏览器没有该变量。
+
+侧栏上内边距因此写成 `calc(24px + var(--dsh-frame-top-clearance,0px))`（窄屏媒体查询同样保留 20px 基准），品牌区不再压在红绿灯上，正文区保持不变。回退值 `0px` 保证浏览器环境与修复前完全一致。
