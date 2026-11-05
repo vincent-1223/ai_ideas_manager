@@ -42,3 +42,5 @@ MVP 的数据全部是浏览器本地结构化数据，不需要模型上下文�
 `shell.overlay` 覆盖整个 frame，桌面端窗口条也在覆盖范围内。macOS 的红绿灯是原生控件，始终画在网页内容之上，插件必须自己让位；DSH 在根元素发布 `--dsh-frame-top-clearance`（macOS 为 48px，Windows 为标题栏高度），普通浏览器没有该变量。
 
 侧栏上内边距因此写成 `calc(24px + var(--dsh-frame-top-clearance,0px))`（窄屏媒体查询同样保留 20px 基准），品牌区不再压在红绿灯上，正文区保持不变。回退值 `0px` 保证浏览器环境与修复前完全一致。
+
+对话框层同理：`.aim-modal-backdrop` 的上内边距用 `--dsh-frame-overlay-top`（macOS 为 68px，原生全屏与浏览器为 20px），矮窗口下 90vh 的编辑器不会顶进窗口条。
