@@ -36,6 +36,24 @@ window.__ModuleLoader__.load({
       "action.delete": "删除",
       "action.today": "加入今天",
       "action.toTask": "转为事项",
+      "action.startIdea": "开始执行",
+      "action.openWorkspace": "进入工作区",
+      "action.regenerate": "重新生成",
+      "starter.eyebrow": "START IDEA",
+      "starter.title": "开始执行这个想法",
+      "starter.idea": "想法",
+      "starter.brief": "补充想法",
+      "starter.briefHint": "会连同首条消息一起交给新工作区",
+      "starter.briefPlaceholder": "还有哪些背景、限制或期待？写在这里。",
+      "starter.folder": "工作区目录名",
+      "starter.folderPlaceholder": "weekly-ai-report",
+      "starter.folderPending": "AI 正在起名…",
+      "starter.folderFailed": "AI 起名失败，已填默认名，可手动修改",
+      "starter.pathPreview": "将创建",
+      "starter.submit": "开始执行",
+      "starter.starting": "正在创建…",
+      "starter.failed": "启动失败",
+      "toast.ideaStarted": "已创建工作区，并转为今天要推进的事项",
       "action.viewAll": "查看全部",
       "action.manage": "管理事项",
       "action.reopen": "重新打开",
@@ -152,6 +170,24 @@ window.__ModuleLoader__.load({
       "action.delete": "Delete",
       "action.today": "Add to today",
       "action.toTask": "Convert to task",
+      "action.startIdea": "Start idea",
+      "action.openWorkspace": "Open workspace",
+      "action.regenerate": "Regenerate",
+      "starter.eyebrow": "START IDEA",
+      "starter.title": "Start this idea",
+      "starter.idea": "Idea",
+      "starter.brief": "Extra context",
+      "starter.briefHint": "Sent to the new workspace with the first message",
+      "starter.briefPlaceholder": "Any background, limits or expectations? Write them here.",
+      "starter.folder": "Workspace folder",
+      "starter.folderPlaceholder": "weekly-ai-report",
+      "starter.folderPending": "Naming…",
+      "starter.folderFailed": "Naming failed, using a default you can edit",
+      "starter.pathPreview": "Will create",
+      "starter.submit": "Start",
+      "starter.starting": "Creating…",
+      "starter.failed": "Start failed",
+      "toast.ideaStarted": "Workspace created and converted into today's task",
       "action.viewAll": "View all",
       "action.manage": "Manage tasks",
       "action.reopen": "Reopen",
@@ -590,6 +626,7 @@ window.__ModuleLoader__.load({
       };
       data = appendLog(data, "idea.converted", message, idea.title, task.id);
       writeState(data);
+      return task.id;
     }
     function addLogEntry(input) {
       writeState(appendLog(snapshot.data, "manual", input.title.trim(), input.note.trim(), ""));
@@ -616,6 +653,203 @@ window.__ModuleLoader__.load({
       const days = Math.round(hours / 24);
       if (Math.abs(days) < 7) return new Intl.RelativeTimeFormat(activeLocale(), { numeric: "auto" }).format(days, "day");
       return formatShortDate(value);
+    }
+    /** Cordis context captured at apply() so buttons can reach DSH services. */
+    let pluginContext = null;
+    const IDEAS_ROOT_KEY = "ai-ideas-manager:v1:ideasRoot";
+    /** Remote verbs answer {ok,value}|{ok:false,error}; normalise both shapes. */
+    function callRemote(invoke) {
+      return Promise.resolve()
+        .then(invoke)
+        .then((result) => (result && typeof result === "object" && "ok" in result ? result : { ok: true, value: result }))
+        .catch((error) => ({ ok: false, error }));
+    }
+    function workspaceSnapshot() {
+      return pluginContext?.get?.("workspaces")?.list?.getSnapshot?.() || { items: [] };
+    }
+    function currentSessionId() {
+      return pluginContext?.get?.("uiWorkspace")?.mainReference?.sessionId || "";
+    }
+    function currentWorkspacePath() {
+      const items = workspaceSnapshot().items || [];
+      const sessionId = currentSessionId();
+      const active = sessionId ? items.find((item) => (item.sessionIds || []).includes(sessionId)) : null;
+      return (active || items[0])?.path || "";
+    }
+    /** Read the cached ~/ideas root without creating it. */
+    function readIdeasRoot() {
+      try {
+        return localStorage.getItem(IDEAS_ROOT_KEY) || "";
+      } catch {
+        return "";
+      }
+    }
+    /** Resolve and persist <home>/ideas from a POSIX or Windows workspace path. */
+    function resolveIdeasRoot() {
+      const cached = readIdeasRoot();
+      if (cached) return cached;
+      const workspacePath = currentWorkspacePath();
+      if (!workspacePath) return "";
+      const posix = workspacePath.includes("/");
+      const parts = posix ? workspacePath.split("/") : workspacePath.split("\\");
+      let home = "";
+      if (posix && (parts[1] === "Users" || parts[1] === "home") && parts[2]) home = `/${parts[1]}/${parts[2]}`;
+      else if (!posix && parts[1] === "Users" && parts[2]) home = `${parts[0]}\\Users\\${parts[2]}`;
+      if (!home) return "";
+      const root = posix ? `${home}/ideas` : `${home}\\ideas`;
+      try {
+        localStorage.setItem(IDEAS_ROOT_KEY, root);
+      } catch {
+        /* storage full or blocked: keep working for this session */
+      }
+      return root;
+    }
+    function pathSeparator(root) {
+      return root.includes("\\") && !root.includes("/") ? "\\" : "/";
+    }
+    /** Model replies are free text; reduce them to one kebab-case folder name. */
+    function sanitizeFolderName(raw) {
+      const firstLine = String(raw || "")
+        .split("\n")
+        .map((line) => line.trim())
+        .find(Boolean) || "";
+      const finish = (value) =>
+        String(value)
+          .toLowerCase()
+          .replace(/[^a-z0-9]+/g, "-")
+          .replace(/^-+/, "")
+          .slice(0, 48)
+          .replace(/-+$/, "");
+      const quoted = firstLine.match(/[`"'“”‘’]([a-z0-9][a-z0-9-]{2,})[`"'“”‘’]/i);
+      if (quoted) return finish(quoted[1]);
+      const dashed = firstLine.match(/\b([a-z0-9]+(?:-[a-z0-9]+)+)\b/i);
+      if (dashed) return finish(dashed[1]);
+      return finish(firstLine);
+    }
+    function fallbackFolderName() {
+      const now = new Date();
+      const stamp = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, "0")}${String(now.getDate()).padStart(2, "0")}`;
+      return `idea-${stamp}-${Math.random().toString(36).slice(2, 6)}`;
+    }
+    function newRequestId() {
+      return typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
+        ? crypto.randomUUID()
+        : `aim-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+    }
+    function namingPrompt(idea, brief) {
+      return [
+        "请为下面的项目想法取一个英文目录名。",
+        "规则：全小写 kebab-case，只用 a-z、0-9 和连字符；2 到 4 个词；语义化地描述这个项目；不要日期、不要序号。",
+        "只输出这一个名字，不要引号、不要冒号、不要解释。",
+        "",
+        `想法：${idea.title}`,
+        `备注：${idea.note || "（无）"}`,
+        `补充：${brief || "（无）"}`,
+      ].join("\n");
+    }
+    function assistantTextFromWait(value) {
+      const records = value?.output?.records || [];
+      const texts = [];
+      for (const record of records) {
+        const event = record?.event;
+        if (event?.type !== "assistant/message") continue;
+        for (const part of event?.data?.message?.content || []) {
+          if (part?.type === "text" && part?.text) texts.push(part.text);
+        }
+      }
+      return texts.join("\n");
+    }
+    function hasEntry(entries, name) {
+      return (entries || []).some(
+        (entry) => entry === name || entry.endsWith(`/${name}`) || entry.endsWith(`\\${name}`),
+      );
+    }
+    /**
+     * One throwaway session turn that returns an English folder name.
+     * DSH exposes no client-side completion API, so this asks a short-lived
+     * session and reads its bounded assistant output; the session is archived
+     * as soon as the answer arrives.
+     */
+    async function generateWorkspaceName(idea, brief) {
+      const remote = pluginContext?.get?.("remote");
+      const sessionRemote = remote?.session;
+      if (!sessionRemote || typeof sessionRemote.create !== "function") throw new Error("session api unavailable");
+      const sessionId = currentSessionId();
+      const items = workspaceSnapshot().items || [];
+      const workspaceId = sessionId
+        ? items.find((item) => (item.sessionIds || []).includes(sessionId))?.workspaceId
+        : undefined;
+      const created = await callRemote(() => sessionRemote.create(workspaceId ? { workspaceId } : {}));
+      if (!created.ok) throw new Error(created.error?.message || "session create failed");
+      const helperId = created.value?.sessionId;
+      if (!helperId) throw new Error("session create returned no id");
+      try {
+        const prompted = await callRemote(() =>
+          sessionRemote.prompt({
+            requestId: newRequestId(),
+            sessionId: helperId,
+            mode: "queue",
+            content: [{ type: "text", text: namingPrompt(idea, brief) }],
+          }),
+        );
+        if (!prompted.ok) throw new Error(prompted.error?.message || "session prompt failed");
+        const waited = await callRemote(() =>
+          sessionRemote.wait({ sessionId: helperId, timeoutMs: 45000, maxMessages: 12 }),
+        );
+        if (!waited.ok) throw new Error(waited.error?.message || "session wait failed");
+        const name = sanitizeFolderName(assistantTextFromWait(waited.value));
+        if (!name) throw new Error("naming turn returned no usable name");
+        return name;
+      } finally {
+        const workspaces = pluginContext?.get?.("workspaces");
+        if (workspaces && typeof workspaces.archiveSession === "function") {
+          await callRemote(() => workspaces.archiveSession(helperId, {}));
+        }
+      }
+    }
+    async function directoryEntries(path) {
+      const picker = pluginContext?.get?.("remote")?.directoryPicker;
+      if (!picker?.list) return null;
+      const result = await callRemote(() => picker.list(path));
+      if (!result.ok) return null;
+      const value = result.value;
+      const entries = Array.isArray(value) ? value : value?.entries || value?.items || [];
+      return entries
+        .map((entry) => (typeof entry === "string" ? entry : entry?.name || entry?.path || ""))
+        .filter(Boolean);
+    }
+    async function createDirectory(parent, name) {
+      const picker = pluginContext?.get?.("remote")?.directoryPicker;
+      if (!picker?.createDirectory) throw new Error("directory api unavailable");
+      const result = await callRemote(() => picker.createDirectory({ path: parent, name }));
+      return result.ok;
+    }
+    async function ensureDirectory(parent, name) {
+      if (hasEntry(await directoryEntries(parent), name)) return true;
+      if (await createDirectory(parent, name)) return true;
+      return hasEntry(await directoryEntries(parent), name);
+    }
+    /** Create root/<base>, falling back to -2, -3… when the name is taken. */
+    async function uniqueDirectory(root, base) {
+      for (let index = 1; index <= 30; index += 1) {
+        const name = index === 1 ? base : `${base}-${index}`;
+        if (hasEntry(await directoryEntries(root), name)) continue;
+        if (await createDirectory(root, name)) return name;
+        if (hasEntry(await directoryEntries(root), name)) continue;
+        return "";
+      }
+      return "";
+    }
+    function firstPromptFor(idea, brief, path) {
+      return [
+        `这是一个新建的项目工作区，目录：${path}`,
+        "",
+        `【想法】${idea.title}`,
+        `【备注】${idea.note || "（无）"}`,
+        `【补充】${brief || "（无）"}`,
+        "",
+        "先不要写代码、不要创建文件。请先针对这个想法提出 3-5 个需要我确认的问题：能给选项的就给选项（例如 1) 方案 A 2) 方案 B），需要我补充信息的直接问。等我回答之后再开始动手。",
+      ].join("\n");
     }
     const iconPaths = {
       spark: "M12 2l1.8 6.2L20 10l-6.2 1.8L12 18l-1.8-6.2L4 10l6.2-1.8L12 2z",
@@ -749,6 +983,14 @@ window.__ModuleLoader__.load({
             task.plannedFor === localDateKey() ? h("span", { className: "aim-meta-chip is-today" }, h(Icon, { name: "calendar", size: 12 }), t("filter.today")) : null,
             task.tags.slice(0, 3).map((tag) => h(Tag, { key: tag }, tag)),
             task.dueDate ? h("span", null, `${t("meta.due")} ${formatShortDate(task.dueDate)}`) : null,
+            task.workspacePath
+              ? h(
+                  "button",
+                  { type: "button", className: "aim-meta-chip aim-workspace-link", onClick: () => openWorkspaceById(task.workspaceId) },
+                  h(Icon, { name: "arrow", size: 11 }),
+                  t("action.openWorkspace"),
+                )
+              : null,
           ),
         ),
         h(StatusBadge, { status: task.status, t }),
@@ -760,7 +1002,7 @@ window.__ModuleLoader__.load({
         ),
       );
     }
-    function IdeaCard({ idea, t, onToday, onEdit, onDelete }) {
+    function IdeaCard({ idea, t, onToday, onEdit, onDelete, onStart }) {
       const converted = Boolean(idea.convertedTaskId);
       return h(
         "article",
@@ -777,7 +1019,17 @@ window.__ModuleLoader__.load({
         h(
           "div",
           { className: "aim-idea-actions" },
-          h("button", { type: "button", className: "is-primary-text", disabled: converted, onClick: () => onToday(idea.id) }, converted ? t("filter.used") : t("action.toTask"), !converted ? h(Icon, { name: "arrow", size: 13 }) : null),
+          idea.workspacePath
+          ? h(
+              "button",
+              { type: "button", className: "is-primary-text", onClick: () => openWorkspaceById(idea.workspaceId) },
+              t("action.openWorkspace"),
+              h(Icon, { name: "arrow", size: 13 }),
+            )
+          : onStart
+            ? h("button", { type: "button", className: "is-primary-text", onClick: () => onStart(idea) }, t("action.startIdea"), h(Icon, { name: "arrow", size: 13 }))
+            : null,
+        h("button", { type: "button", className: "is-primary-text", disabled: converted, onClick: () => onToday(idea.id) }, converted ? t("filter.used") : t("action.toTask"), !converted ? h(Icon, { name: "arrow", size: 13 }) : null),
           h("button", { type: "button", onClick: () => onEdit(idea) }, h(Icon, { name: "edit", size: 14 }), t("action.edit")),
           h("button", { type: "button", onClick: () => onDelete(idea) }, h(Icon, { name: "trash", size: 14 }), t("action.delete")),
         ),
@@ -878,7 +1130,7 @@ window.__ModuleLoader__.load({
         h("button", { type: "button", className: "aim-quick-primary", onClick: () => submit("today") }, t("quick.today"), h(Icon, { name: "arrow", size: 13 })),
       );
     }
-    function Dashboard({ data, t, onToggle, onEditTask, onDeleteTask, onIdeaToday, onEditIdea, onDeleteIdea, onCreateTask, onCreateIdea, onNavigate }) {
+    function Dashboard({ data, t, onToggle, onEditTask, onDeleteTask, onIdeaToday, onEditIdea, onDeleteIdea, onCreateTask, onCreateIdea, onNavigate, onStartIdea }) {
       const today = localDateKey();
       const todayItems = data.tasks.filter((task) => task.plannedFor === today || task.dueDate === today);
       const pendingToday = todayItems.filter((task) => task.status !== "completed").length;
@@ -973,6 +1225,11 @@ window.__ModuleLoader__.load({
                       h(
                         "div",
                         null,
+                        idea.workspacePath
+                          ? h("button", { type: "button", onClick: () => openWorkspaceById(idea.workspaceId) }, t("action.openWorkspace"))
+                          : onStartIdea
+                            ? h("button", { type: "button", onClick: () => onStartIdea(idea) }, t("action.startIdea"))
+                            : null,
                         h("button", { type: "button", onClick: () => onIdeaToday(idea.id) }, t("action.today")),
                         h("span", null, formatRelative(idea.createdAt)),
                       ),
@@ -985,7 +1242,7 @@ window.__ModuleLoader__.load({
         ),
       );
     }
-    function Modal({ title, t, children, onClose, onSubmit, submitLabel }) {
+    function Modal({ title, eyebrow, t, children, onClose, onSubmit, submitLabel, submitDisabled }) {
       const firstRef = React.useRef(null);
       React.useEffect(() => {
         const onKeyDown = (event) => {
@@ -1004,7 +1261,7 @@ window.__ModuleLoader__.load({
           h(
             "div",
             { className: "aim-modal-head" },
-            h("div", null, h("span", null, "CAPTURE"), h("h2", null, title)),
+            h("div", null, h("span", null, eyebrow || "CAPTURE"), h("h2", null, title)),
             h("button", { type: "button", className: "aim-icon-button", onClick: onClose, "aria-label": t("action.cancel") }, h(Icon, { name: "close", size: 17 })),
           ),
           h("div", { className: "aim-modal-body", ref: firstRef }, children),
@@ -1012,7 +1269,7 @@ window.__ModuleLoader__.load({
             "div",
             { className: "aim-modal-actions" },
             h("button", { type: "button", className: "aim-button-secondary", onClick: onClose }, t("action.cancel")),
-            h("button", { type: "submit", className: "aim-button-primary" }, submitLabel || t("action.save")),
+            h("button", { type: "submit", className: "aim-button-primary", disabled: !!submitDisabled }, submitLabel || t("action.save")),
           ),
         ),
       );
@@ -1089,6 +1346,94 @@ window.__ModuleLoader__.load({
         h(Field, { label: t("label.tags"), hint: t("label.tagsHint") }, h("input", { value: tagsText, onChange: (event) => setTagsText(event.target.value), placeholder: "产品, AI 工具" })),
       );
     }
+    function StartIdeaDialog({ idea, t, onClose, onStarted }) {
+      const [brief, setBrief] = React.useState("");
+      const [name, setName] = React.useState("");
+      const [nameState, setNameState] = React.useState("loading");
+      const [nameError, setNameError] = React.useState("");
+      const [busy, setBusy] = React.useState(false);
+      const [error, setError] = React.useState("");
+      const briefRef = React.useRef("");
+      const regenerate = React.useCallback(() => {
+        setNameState("loading");
+        setNameError("");
+        generateWorkspaceName(idea, briefRef.current)
+          .then((value) => {
+            setName(value);
+            setNameState("ready");
+          })
+          .catch((reason) => {
+            setName(fallbackFolderName());
+            setNameState("error");
+            setNameError(String((reason && reason.message) || reason));
+          });
+      }, [idea]);
+      React.useEffect(() => {
+        resolveIdeasRoot();
+        regenerate();
+      }, [regenerate]);
+      const previewRoot = readIdeasRoot() || "~/ideas";
+      const blocked = busy || nameState === "loading";
+      return h(
+        Modal,
+        {
+          title: t("starter.title"),
+          eyebrow: t("starter.eyebrow"),
+          t,
+          onClose,
+          submitLabel: busy ? t("starter.starting") : t("starter.submit"),
+          submitDisabled: blocked,
+          onSubmit: (event) => {
+            event.preventDefault();
+            if (blocked) return;
+            setBusy(true);
+            setError("");
+            onStarted({ idea, brief: brief.trim(), name: name.trim() }).catch((reason) => {
+              setBusy(false);
+              setError(String((reason && reason.message) || reason));
+            });
+          },
+        },
+        h(Field, { label: t("starter.idea") }, h("input", { value: idea.title, readOnly: true })),
+        h(
+          Field,
+          { label: t("starter.brief"), hint: t("starter.briefHint") },
+          h("textarea", {
+            rows: 3,
+            value: brief,
+            placeholder: t("starter.briefPlaceholder"),
+            onChange: (event) => {
+              briefRef.current = event.target.value;
+              setBrief(event.target.value);
+            },
+          }),
+        ),
+        h(
+          "div",
+          { className: "aim-field" },
+          h(
+            "span",
+            null,
+            t("starter.folder"),
+            nameState === "loading" ? h("small", null, t("starter.folderPending")) : null,
+            nameState === "error" ? h("small", { className: "aim-field-error" }, t("starter.folderFailed")) : null,
+          ),
+          h(
+            "div",
+            { className: "aim-name-row" },
+            h("input", { value: name, placeholder: t("starter.folderPlaceholder"), onChange: (event) => setName(event.target.value) }),
+            h("button", { type: "button", className: "aim-button-secondary", disabled: nameState === "loading", onClick: regenerate }, t("action.regenerate")),
+          ),
+        ),
+        h(
+          "p",
+          { className: "aim-path-preview" },
+          `${t("starter.pathPreview")} ${previewRoot}${pathSeparator(previewRoot) || "/"}${sanitizeFolderName(name) || t("starter.folderPlaceholder")}`,
+        ),
+        error ? h("p", { className: "aim-form-error" }, `${t("starter.failed")}: ${error}`) : null,
+        nameState === "error" && nameError ? h("p", { className: "aim-form-error" }, nameError) : null,
+      );
+    }
     function LogEditor({ t, onClose, onSave }) {
       const [title, setTitle] = React.useState("");
       const [note, setNote] = React.useState("");
@@ -1163,7 +1508,7 @@ window.__ModuleLoader__.load({
         ),
       );
     }
-    function IdeasPage({ data, t, onToday, onEdit, onDelete, onCreate }) {
+    function IdeasPage({ data, t, onToday, onEdit, onDelete, onCreate, onStart }) {
       const [filter, setFilter] = React.useState("all");
       const ideas = data.ideas.filter((idea) => (filter === "used" ? idea.convertedTaskId : filter === "recent" ? new Date(idea.createdAt) > new Date(Date.now() - 7 * DAY_MS) : true));
       const tabs = [
@@ -1183,7 +1528,7 @@ window.__ModuleLoader__.load({
         h(Toolbar, { tabs, value: filter, onChange: setFilter }),
         h("div", { className: "aim-idea-grid" },
           ideas.length
-            ? ideas.map((idea) => h(IdeaCard, { key: idea.id, idea, t, onToday, onEdit, onDelete }))
+            ? ideas.map((idea) => h(IdeaCard, { key: idea.id, idea, t, onToday, onEdit, onDelete, onStart }))
             : h(EmptyState, { icon: "inbox", title: filter === "all" ? t("ideas.empty") : t("ideas.emptyFiltered") }),
         ),
       );
@@ -1238,7 +1583,7 @@ window.__ModuleLoader__.load({
           : h(EmptyState, { icon: "tag", title: t("tags.empty") }),
       );
     }
-    function SearchResults({ data, query, t, onToggle, onEditTask, onDeleteTask, onEditIdea, onDeleteIdea, onIdeaToday }) {
+    function SearchResults({ data, query, t, onToggle, onEditTask, onDeleteTask, onEditIdea, onDeleteIdea, onIdeaToday, onStart }) {
       const needle = query.trim().toLocaleLowerCase(activeLocale());
       const matches = (item) => [item.title, item.note, ...(item.tags || [])].join(" ").toLocaleLowerCase(activeLocale()).includes(needle);
       const tasks = data.tasks.filter(matches);
@@ -1252,7 +1597,7 @@ window.__ModuleLoader__.load({
         tasks.length ? h("h2", { className: "aim-result-title" }, t("tasks.title"), h("span", null, tasks.length)) : null,
         h("div", { className: "aim-task-list" }, tasks.map((task) => h(TaskRow, { key: task.id, task, t, onToggle: () => onToggle(task.id), onEdit: onEditTask, onDelete: onDeleteTask }))),
         ideas.length ? h("h2", { className: "aim-result-title" }, t("ideas.title"), h("span", null, ideas.length)) : null,
-        ideas.length ? h("div", { className: "aim-idea-grid" }, ideas.map((idea) => h(IdeaCard, { key: idea.id, idea, t, onToday: onIdeaToday, onEdit: onEditIdea, onDelete: onDeleteIdea }))) : null,
+        ideas.length ? h("div", { className: "aim-idea-grid" }, ideas.map((idea) => h(IdeaCard, { key: idea.id, idea, t, onToday: onIdeaToday, onEdit: onEditIdea, onDelete: onDeleteIdea, onStart }))) : null,
         logs.length ? h("h2", { className: "aim-result-title" }, t("logs.title"), h("span", null, logs.length)) : null,
         logs.length ? h("section", { className: "aim-log-panel" }, h(LogList, { logs, t, limit: 100 })) : null,
         !count ? h(EmptyState, { icon: "search", title: t("search.empty") }) : null,
@@ -1264,6 +1609,7 @@ window.__ModuleLoader__.load({
       const [query, setQuery] = React.useState("");
       const [editor, setEditor] = React.useState(null);
       const [toast, setToast] = React.useState("");
+      const [starter, setStarter] = React.useState(null);
       const toastTimer = React.useRef(null);
       const { data } = appState;
       const showToast = (message) => {
@@ -1284,6 +1630,7 @@ window.__ModuleLoader__.load({
         ideaUpdated: t("toast.ideaUpdated"),
         ideaDeleted: t("toast.ideaDeleted"),
         ideaMoved: t("toast.ideaMoved"),
+        ideaStarted: t("toast.ideaStarted"),
         logCreated: t("toast.logCreated"),
       };
       const toggle = (id) => {
@@ -1335,6 +1682,18 @@ window.__ModuleLoader__.load({
         ideaToTask(id, messages.ideaMoved);
         showToast(messages.ideaMoved);
       };
+      const openStarter = (idea) => setStarter({ idea });
+      const startIdea = ({ idea, brief, name }) =>
+        startIdeaWorkspace(idea, brief, name, { started: messages.ideaStarted, moved: messages.ideaMoved }).then((result) => {
+          setStarter(null);
+          setOverlayOpen(false);
+          try {
+            pluginContext?.get?.("uiWorkspace")?.startSession(result.workspaceId, { prompt: firstPromptFor(idea, brief, result.path) });
+          } catch (reason) {
+            console.warn("start session failed:", reason);
+          }
+          showToast(messages.ideaStarted);
+        });
       const exportData = () => {
         const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
         const url = URL.createObjectURL(blob);
@@ -1375,11 +1734,12 @@ window.__ModuleLoader__.load({
           onEditIdea: (idea) => setEditor({ kind: "idea", item: idea }),
           onDeleteIdea: removeIdea,
           onIdeaToday: convertIdea,
+          onStart: openStarter,
         });
       } else if (page === "tasks") {
         content = h(TasksPage, { data, t, onToggle: toggle, onEdit: (task) => setEditor({ kind: "task", item: task }), onDelete: removeTask, onCreate: () => setEditor({ kind: "task", item: null }) });
       } else if (page === "ideas") {
-        content = h(IdeasPage, { data, t, onToday: convertIdea, onEdit: (idea) => setEditor({ kind: "idea", item: idea }), onDelete: removeIdea, onCreate: () => setEditor({ kind: "idea", item: null }) });
+        content = h(IdeasPage, { data, t, onToday: convertIdea, onEdit: (idea) => setEditor({ kind: "idea", item: idea }), onDelete: removeIdea, onCreate: () => setEditor({ kind: "idea", item: null }), onStart: openStarter });
       } else if (page === "completed") {
         content = h(CompletedPage, { data, t, onToggle: toggle, onEdit: (task) => setEditor({ kind: "task", item: task }), onDelete: removeTask });
       } else if (page === "logs") {
@@ -1399,6 +1759,7 @@ window.__ModuleLoader__.load({
           onCreateTask: createTask,
           onCreateIdea: createIdea,
           onNavigate: navigate,
+          onStartIdea: openStarter,
         });
       }
       const pageLabel = [...nav, ...secondary].find((item) => item.id === page)?.label || t("nav.dashboard");
@@ -1443,6 +1804,7 @@ window.__ModuleLoader__.load({
         editor?.kind === "task" ? h(TaskEditor, { task: editor.item, t, onClose: () => setEditor(null), onSave: saveTask }) : null,
         editor?.kind === "idea" ? h(IdeaEditor, { idea: editor.item, t, onClose: () => setEditor(null), onSave: saveIdea }) : null,
         editor?.kind === "log" ? h(LogEditor, { t, onClose: () => setEditor(null), onSave: (input) => { addLogEntry(input); showToast(messages.logCreated); setEditor(null); } }) : null,
+        starter ? h(StartIdeaDialog, { idea: starter.idea, t, onClose: () => setStarter(null), onStarted: startIdea }) : null,
         toast ? h("div", { className: "aim-toast", role: "status" }, h(Icon, { name: "check", size: 15 }), toast) : null,
       );
     }
@@ -1557,6 +1919,13 @@ window.__ModuleLoader__.load({
       .aim-result-title{font-size:12px;font-weight:500;color:#c7c8ce;margin:24px 0 10px;display:flex;align-items:center;gap:7px}.aim-result-title span{font-size:8px;color:#6b717c;border:1px solid var(--aim-line);border-radius:9px;padding:2px 6px}
       .aim-modal-backdrop{position:fixed;inset:0;z-index:4;background:rgba(4,5,8,.74);backdrop-filter:blur(8px);display:grid;place-items:center;padding:var(--dsh-frame-overlay-top,20px) 20px 20px;animation:aim-fade .15s ease-out}.aim-modal{width:min(560px,94vw);max-height:90vh;overflow:auto;border:1px solid rgba(255,255,255,.13);border-radius:12px;background:#12141a;box-shadow:0 30px 90px rgba(0,0,0,.5);display:flex;flex-direction:column}.aim-modal-head{display:flex;align-items:center;justify-content:space-between;padding:19px 21px;border-bottom:1px solid var(--aim-line)}.aim-modal-head span{font-size:7px;letter-spacing:1.6px;color:#756b8d}.aim-modal-head h2{font-size:17px;margin:4px 0 0;font-weight:500}.aim-icon-button{width:30px;height:30px;border:1px solid var(--aim-line);background:#181b22;color:#858b96!important}.aim-modal-body{padding:20px 21px;display:grid;gap:15px}.aim-field{display:grid;gap:7px}.aim-field>span{font-size:9px;color:#a5a9b2}.aim-field small{font-size:7px;color:#5c626d;margin-left:6px}.aim-field input,.aim-field textarea,.aim-field select{width:100%;border:1px solid #303540;border-radius:7px;background:#171a21;color:#e3e4e8;padding:10px 11px;font-size:10px;outline:none;resize:vertical}.aim-field input:focus,.aim-field textarea:focus,.aim-field select:focus{border-color:#66558e}.aim-field-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}.aim-toggle-row{height:38px;display:flex;align-items:center;gap:9px;border:1px solid var(--aim-line);border-radius:7px;padding:0 11px;color:#a2a7b0;font-size:9px;cursor:pointer}.aim-toggle-row input{accent-color:var(--aim-purple)}.aim-modal-actions{display:flex;justify-content:flex-end;gap:8px;padding:15px 21px 19px;border-top:1px solid var(--aim-line)}
       .aim-toast{position:fixed;left:50%;bottom:28px;transform:translateX(-50%);z-index:5;display:flex;align-items:center;gap:8px;padding:10px 14px;border:1px solid rgba(105,216,180,.24);border-radius:8px;background:rgba(17,24,22,.95);color:#bde8da;box-shadow:0 14px 45px rgba(0,0,0,.35);font-size:9px;animation:aim-toast-in .2s ease-out}
+      .aim-name-row{display:flex;gap:8px;align-items:center}.aim-name-row input{flex:1;min-width:0}
+      .aim-name-row button{flex:none;height:34px;padding:0 11px}
+      .aim-path-preview{margin:-6px 0 0;font-size:9px;color:#6b717c;word-break:break-all}
+      .aim-form-error{margin:0;font-size:9px;line-height:1.5;color:#f2a29e}
+      .aim-field small.aim-field-error{color:#f2a29e}
+      .aim-workspace-link{border:1px solid #323741;border-radius:4px;background:rgba(167,139,250,.08);color:#b9a8ee!important;font-size:8px;padding:3px 7px;cursor:pointer;display:inline-flex;align-items:center;gap:4px}
+      .aim-workspace-link:hover{background:rgba(167,139,250,.18);color:#fff!important}
       @keyframes aim-fade{from{opacity:0}to{opacity:1}}@keyframes aim-page-in{from{opacity:0;transform:translateY(5px)}to{opacity:1;transform:none}}@keyframes aim-toast-in{from{opacity:0;transform:translate(-50%,6px)}to{opacity:1;transform:translate(-50%,0)}}
       @media(max-width:1120px){.aim-dashboard-grid{grid-template-columns:minmax(0,1fr) 300px}.aim-idea-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.aim-search{width:210px}.aim-top-add{display:none}.aim-page{padding-left:26px;padding-right:26px}}
       @media(max-width:860px){.aim-workspace{grid-template-columns:68px minmax(0,1fr)}.aim-sidebar{padding:calc(20px + var(--dsh-frame-top-clearance,0px)) 10px 14px}.aim-brand{padding:2px 7px 24px}.aim-brand>div,.aim-nav-label,.aim-nav button>span,.aim-nav button>b,.aim-sidebar-bottom>div{display:none}.aim-nav button{justify-content:center;padding:0}.aim-nav button svg{width:18px;height:18px}.aim-sidebar-bottom{justify-content:center;padding-left:0;padding-right:0}.aim-welcome{align-items:flex-start;flex-direction:column;gap:20px;padding:25px 0}.aim-progress-card{align-self:flex-end;margin:-15px 0 0}.aim-dashboard-grid{grid-template-columns:1fr}.aim-idea-grid{grid-template-columns:1fr}.aim-topbar{padding:0 18px}.aim-crumb span,.aim-crumb i,.aim-search kbd{display:none}.aim-search{width:180px}.aim-page{padding:24px 18px 36px}.aim-welcome h1{font-size:31px}.aim-task-row{grid-template-columns:19px minmax(0,1fr) auto}.aim-task-row>.aim-status{display:none}.aim-row-actions{opacity:1}.aim-toolbar{height:auto;min-height:61px;align-items:flex-start;gap:10px;padding:12px 0;flex-wrap:wrap}.aim-filter-tabs{height:35px;overflow:auto;max-width:100%}.aim-heading-actions .aim-button-primary,.aim-heading-actions .aim-button-secondary{font-size:0;width:34px;padding:0}.aim-heading-actions svg{width:16px;height:16px}.aim-completed-summary{grid-template-columns:auto auto}.aim-completed-summary p{grid-column:1/-1;text-align:left}}
@@ -1566,6 +1935,7 @@ window.__ModuleLoader__.load({
     return {
       inject: ["slots", "locale"],
       apply(ctx) {
+        pluginContext = ctx;
         ctx.effect(() => ctx.locale.register(NS, { zh, en }), "ai-ideas-manager: locale");
         ctx.effect(() => {
           const tag = document.createElement("style");

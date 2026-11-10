@@ -44,3 +44,17 @@ MVP 的数据全部是浏览器本地结构化数据，不需要模型上下文�
 侧栏上内边距因此写成 `calc(24px + var(--dsh-frame-top-clearance,0px))`（窄屏媒体查询同样保留 20px 基准），品牌区不再压在红绿灯上，正文区保持不变。回退值 `0px` 保证浏览器环境与修复前完全一致。
 
 对话框层同理：`.aim-modal-backdrop` 的上内边距用 `--dsh-frame-overlay-top`（macOS 为 68px，原生全屏与浏览器为 20px），矮窗口下 90vh 的编辑器不会顶进窗口条。
+
+## 灵感开工链路
+
+「开始执行」要先有目录名、再开会话，而 DSH **没有**给客户端插件"调一次模型拿回复"的能力：`llm` 命名空间只有 `discoverModels` / `listProviders` 这类目录查询，`session/prompt` 与 `subagents/prompt` 都只投递消息、不返回回复。
+
+可用的替代是一次临时会话往返（`session/create` → `session/prompt` → `session/wait`，其中 `wait` 返回有界 assistant 输出）：
+
+1. 弹窗打开时取一次英文目录名：发"只输出一个 kebab-case 名字"，从 `wait` 的 `output.records[].event`（`assistant/message`）里解析文本，随后 `workspace/archiveSession` 归档临时会话。失败则回退到 `idea-<日期>-<随机>` 并把错误原因显示在弹窗里，目录名仍可手动改。
+2. 确认后依次：`directoryPicker.createDirectory` 建 `~/ideas/<名字>`（撞名自动加 `-2`、`-3`）→ `workspaces.create` 注册工作区 → 灵感转事项并给事项与灵感写入 `workspacePath` / `workspaceId` → 关闭覆盖层 → `uiWorkspace.startSession(workspaceId, { prompt })` 预填首条消息。
+3. 首条消息的约定是"先不要写代码，先提出 3-5 个需要确认的问题"，答案由用户在新会话的输入框里给出——那也是补充想法的第二个入口。
+
+`~/ideas` 根目录由当前工作区路径推导（`/Users/<name>`、`/home/<name>`、`C:\Users\<name>`），结果缓存在 `ai-ideas-manager:v1:ideasRoot`，只推导一次。
+
+数据边界不变：工作区锚点只写进 localStorage 里的事项/灵感记录，插件不读写工作区文件（`workspaceFiles` 是只读的，且这里用不上）。
